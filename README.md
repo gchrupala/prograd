@@ -4,6 +4,6 @@ Set up the environment on the compute cluster.
 ssh purpureus.uvt.nl
 srun --nodes=1 --pty /bin/bash -l
 conda activate home
-cd flik
+cd prograd
 source bin/activate
 </pre>
