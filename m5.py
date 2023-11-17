@@ -44,9 +44,9 @@ class M5(nn.Module):
         x = self.fc1(x)
         return F.log_softmax(x, dim=2)
 
-def pad_sequence(batch):
+def pad_sequence(batch, max_len=16000):
     # Make all tensor in a batch the same length by padding with zeros
-    batch = [item.t() for item in batch]
+    batch = [item[:max_len].t() for item in batch]
     batch = torch.nn.utils.rnn.pad_sequence(batch, batch_first=True, padding_value=0.)
     return batch.permute(0, 2, 1)
 
@@ -72,13 +72,15 @@ def collate_fn(batch):
     
 class AudioClassifier:
 
-    def __init__(self, train_set, val_set):
+    def __init__(self, train_set, val_set, get_label, batch_size=128):
+        self.get_label = get_label
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model = M5().to(self.device)
-        self.labels = sorted(list(set(datapoint[2] for datapoint in train_set)))
+        self.labels = sorted(list(set(self.get_label(datapoint) for datapoint in train_set)))
+        print(self.labels)
         self.train_loader = torch.utils.data.DataLoader(
             train_set,
-            batch_size=256,
+            batch_size=batch_size,
             shuffle=True,
             collate_fn=lambda batch: self.collate(batch),
             pin_memory=True,
@@ -86,7 +88,7 @@ class AudioClassifier:
 
         self.val_loader = torch.utils.data.DataLoader(
             val_set,
-            batch_size=256,
+            batch_size=batch_size,
             shuffle=False,
             drop_last=False,
             collate_fn=lambda batch: self.collate(batch),
@@ -105,7 +107,9 @@ class AudioClassifier:
         tensors, targets = [], []
         
         # Gather in lists, and encode labels as indices
-        for waveform, _, label, *_ in batch:
+        for item in batch:
+            waveform = item[0]
+            label = self.get_label(item)
             tensors += [waveform]
             targets += [self.label_to_index(label)]
 
@@ -194,12 +198,23 @@ class SubsetSC(SPEECHCOMMANDS):
 
 
 
+dataset = "CV"            
 def main():
-    train_set = SubsetSC("training")
-    val_set = SubsetSC("validation")
+    if dataset == "SC":
+        train_set = SubsetSC("training")
+        val_set = SubsetSC("validation")
+        get_label = lambda x: x[2]
+    elif dataset == "CV":
+        # FIXME UGLY HACK
+        train_set = torchaudio.datasets.COMMONVOICE(root="data/in/cv-corpus-15.0-2023-09-08/pl/", tsv="train.tsv")
+        train_set._walker = train_set._walker[:500]
+        
+        val_set = torchaudio.datasets.COMMONVOICE(root="data/in/cv-corpus-15.0-2023-09-08/pl/", tsv="train.tsv")
+        val_set._walker = val_set._walker[500:800]
+        get_label = lambda x: x[2]['gender']
     log_interval = 40
     n_epoch = 5
-    net = AudioClassifier(train_set, val_set)
+    net = AudioClassifier(train_set, val_set, get_label)
     for epoch in range(1, n_epoch + 1):
         net.train(epoch, log_interval)
         net.validate(epoch)
