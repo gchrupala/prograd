@@ -6,7 +6,7 @@ import torchaudio
 import sys
 from torchaudio.datasets import SPEECHCOMMANDS
 import os
-
+import logging
 
             
 class M5(nn.Module):
@@ -44,35 +44,16 @@ class M5(nn.Module):
         x = self.fc1(x)
         return F.log_softmax(x, dim=2)
 
-def pad_sequence(batch, max_len=16000):
+def pad_sequence(batch, max_len=-1): 
     # Make all tensor in a batch the same length by padding with zeros
-    batch = [item[:max_len].t() for item in batch]
+    batch = [item.t()[:max_len] for item in batch]
     batch = torch.nn.utils.rnn.pad_sequence(batch, batch_first=True, padding_value=0.)
+    #print(batch.shape)
     return batch.permute(0, 2, 1)
 
-def collate_fn(batch):
-
-    # A data tuple has the form:
-    # waveform, sample_rate, label, speaker_id, utterance_number
-
-    tensors, targets = [], []
-
-    # Gather in lists, and encode labels as indices
-    for waveform, _, label, *_ in batch:
-        tensors += [waveform]
-        targets += [label_to_index(label)]
-
-    # Group the list of tensors into a batched tensor
-    tensors = pad_sequence(tensors)
-    targets = torch.stack(targets)
-
-    return tensors, targets
-
-
-    
 class AudioClassifier:
 
-    def __init__(self, train_set, val_set, get_label, batch_size=128):
+    def __init__(self, train_set, val_set, get_label, batch_size=128, max_len=-1):
         self.get_label = get_label
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model = M5().to(self.device)
@@ -82,7 +63,7 @@ class AudioClassifier:
             train_set,
             batch_size=batch_size,
             shuffle=True,
-            collate_fn=lambda batch: self.collate(batch),
+            collate_fn=lambda batch: self.collate(batch, max_len=max_len),
             pin_memory=True,
         )
 
@@ -91,15 +72,16 @@ class AudioClassifier:
             batch_size=batch_size,
             shuffle=False,
             drop_last=False,
-            collate_fn=lambda batch: self.collate(batch),
+            collate_fn=lambda batch: self.collate(batch, max_len=max_len),
             pin_memory=True
         )
-        self.transform = torchaudio.transforms.Resample(orig_freq=16000, new_freq=8000).to(self.device)
-        self.optimizer = optim.Adam(self.model.parameters(), lr=0.01, weight_decay=0.0001)
+        self.transform = torchaudio.transforms.Resample(orig_freq=16000, new_freq=16000).to(self.device)
+        #self.optimizer = optim.Adam(self.model.parameters(), lr=0.01, weight_decay=0.0001)
+        self.optimizer = optim.Adam(self.model.parameters())
         self.scheduler = optim.lr_scheduler.StepLR(self.optimizer, step_size=20, gamma=0.1)  # reduce the learning after 20 epochs by a factor of 10
         self.losses = []
         
-    def collate(self, batch):
+    def collate(self, batch, max_len=-1):
 
         # A data tuple has the form:
         # waveform, sample_rate, label, speaker_id, utterance_number
@@ -114,7 +96,7 @@ class AudioClassifier:
             targets += [self.label_to_index(label)]
 
         # Group the list of tensors into a batched tensor
-        tensors = pad_sequence(tensors)
+        tensors = pad_sequence(tensors, max_len=max_len)
         targets = torch.stack(targets)
 
         return tensors, targets
@@ -197,23 +179,47 @@ class SubsetSC(SPEECHCOMMANDS):
             self._walker = [w for w in self._walker if w not in excludes]
 
 
+class CommonVoiceBinary:
+    def __init__(self, start=0, end=-1):
+        cv = torchaudio.datasets.COMMONVOICE(root="data/in/cv-corpus-15.0-2023-09-08/pl/", tsv="train.tsv")
+        self.data = []
+        if end == -1:
+            end = len(cv)-1
+        for i in range(start, end):
+            try:
+                if cv[i][2]['gender'] in ['male', 'female']:
+                    self.data.append(cv[i])
+            except IndexError:
+                pass
+    def __getitem__(self, index):
+        return self.data[index]
+    
+    def __len__(self):
+        return len(self.data)
 
+def majority(data):
+    from collections import Counter
+    maj, count = sorted(Counter([item[2]['gender'] for item in data]).items(), key=lambda x: x[1])[-1]
+    return maj, count / len(data)
+    
 dataset = "CV"            
 def main():
+    logging.getLogger().setLevel(logging.INFO)
     if dataset == "SC":
         train_set = SubsetSC("training")
         val_set = SubsetSC("validation")
         get_label = lambda x: x[2]
     elif dataset == "CV":
-        # FIXME UGLY HACK
-        train_set = torchaudio.datasets.COMMONVOICE(root="data/in/cv-corpus-15.0-2023-09-08/pl/", tsv="train.tsv")
-        train_set._walker = train_set._walker[:500]
+        train_set = CommonVoiceBinary(start=0, end=10000)
+        logging.info(f"Train set done: {len(train_set)}")
+        logging.info(f"Train set majority = {majority(train_set)}")
+        val_set = CommonVoiceBinary(start=10000, end=-1)
+        logging.info(f"Val set done: {len(val_set)}")
+        logging.info(f"Val set majority = {majority(val_set)}")
         
-        val_set = torchaudio.datasets.COMMONVOICE(root="data/in/cv-corpus-15.0-2023-09-08/pl/", tsv="train.tsv")
-        val_set._walker = val_set._walker[500:800]
         get_label = lambda x: x[2]['gender']
-    log_interval = 40
-    n_epoch = 5
+    log_interval = 20
+    n_epoch = 100
     net = AudioClassifier(train_set, val_set, get_label)
     for epoch in range(1, n_epoch + 1):
         net.train(epoch, log_interval)
