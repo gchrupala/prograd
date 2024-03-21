@@ -5,7 +5,8 @@ import torchaudio.functional as A
 import torch.nn.functional as F
 from captum.attr import Saliency
 import logging
-from torchaudio.transforms import Loudness, Spectrogram
+#from torchaudio.transforms import Loudness, Spectrogram
+from torchaudio.transforms import Spectrogram
 
 class Net(nn.Module):
     def __init__(self):
@@ -42,7 +43,7 @@ def main():
     msqq = Saliency(lambda w: msq(w).unsqueeze(dim=0))
     std = Saliency(lambda w: w.std(dim=1).unsqueeze(dim=0))
     maxx = Saliency(lambda w: w.max(dim=1)[0].unsqueeze(dim=0))
-    loud = Saliency(lambda w: Loudness(16000)(w).reshape(1,1))
+    #loud = Saliency(lambda w: Loudness(16000)(w).reshape(1,1))
     pitch = Saliency(lambda w: Pitch()(w).reshape(1,1))
     for item in dataset:
         w, *_ = item
@@ -52,12 +53,12 @@ def main():
         gmsq = msqq.attribute(w, target=0, abs=False)
         gstd = std.attribute(w, target=0, abs=False)
         gmax = maxx.attribute(w, target=0, abs=False)
-        gloud = loud.attribute(w, target=0, abs=False)
+        #gloud = loud.attribute(w, target=0, abs=False)
         gpitch = pitch.attribute(w, target=0, abs=False)
         logging.info(f"Corr: net2 vs msq  = {corr(gnet2, gmsq)}")
         logging.info(f"Corr: net2 vs std  = {corr(gnet2, gstd)}")
         logging.info(f"Corr: net2 vs max  = {corr(gnet2, gmax)}")
-        logging.info(f"Corr: net2 vs loud = {corr(gnet2, gloud)}")
+        #logging.info(f"Corr: net2 vs loud = {corr(gnet2, gloud)}")
         logging.info(f"Corr: net2 vs pitch = {corr(gnet2, gpitch)}")
         print()
 
